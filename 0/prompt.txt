@@ -1,0 +1,1 @@
+I have a stored copies of two albums that the Super Furry Animals released as surround sound DVD videos.  I would like to wrtie a script that can extract the AC3 5.1 surround mix for the album and output them as standalone ac3 files.  One of the albums can be found at "/Volumes/Ten/.CloudStorage/Data/Dropbox/Video/DVD/Phantom Power.dvdmedia"

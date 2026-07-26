@@ -27,3 +27,7 @@ end session
 ---
 
 I've set up the pulse MCP -- can you post to socialmedia and your journal?
+
+---
+
+Can you make the script also extract DTS tracks if they exist?  Make the folder you output to the album name + "DTS".  Add ID3 tags too.

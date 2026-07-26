@@ -3,7 +3,8 @@
 
 Uses HandBrakeCLI (which bundles its own DVD chapter/cell navigation) to find
 the main "play the album" title and cut it into one AC3 file per chapter.
-Track names are optionally sourced from a MusicBrainz release.
+Track/artist/album metadata is optionally sourced from a MusicBrainz release
+and written as ID3v2 tags on each output file.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-MUSICBRAINZ_API = "https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings&fmt=json"
+from mutagen.id3 import ID3, TALB, TDRC, TIT2, TPE1, TRCK, ID3NoHeaderError
+
+MUSICBRAINZ_API = "https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artist-credits&fmt=json"
 USER_AGENT = "sfa-extractor/0.1 (personal use script)"
 
 REQUIRED_TOOLS = ("HandBrakeCLI", "ffmpeg", "ffprobe")
@@ -137,13 +140,31 @@ def pick_album_title(titles: list[Title]) -> Title:
     return max(candidates, key=lambda t: t.length_seconds)
 
 
-def fetch_musicbrainz_titles(mbid: str) -> list[str]:
+@dataclass
+class AlbumMetadata:
+    title: str
+    artist: str
+    date: str | None
+    track_titles: list[str]
+
+
+def _format_artist_credit(artist_credit: list[dict]) -> str:
+    return "".join(credit["name"] + credit.get("joinphrase", "") for credit in artist_credit)
+
+
+def fetch_musicbrainz_release(mbid: str) -> AlbumMetadata:
     url = MUSICBRAINZ_API.format(mbid=mbid)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=15) as response:
         data = json.load(response)
     medium = data["media"][0]
-    return [track["title"] for track in medium["tracks"]]
+    artist = _format_artist_credit(data.get("artist-credit", [])) or "Unknown Artist"
+    return AlbumMetadata(
+        title=data["title"],
+        artist=artist,
+        date=data.get("date"),
+        track_titles=[track["title"] for track in medium["tracks"]],
+    )
 
 
 def sanitize_filename(name: str) -> str:
@@ -211,6 +232,35 @@ def extract_chapter(
     tmp_path.unlink(missing_ok=True)
 
 
+def write_id3_tags(
+    path: Path,
+    title: str,
+    artist: str,
+    album: str,
+    track_number: int,
+    track_total: int,
+    date: str | None,
+) -> None:
+    """Prepend an ID3v2 tag to a raw AC3 file.
+
+    Raw AC3 has no native metadata container (ffmpeg's `ac3` muxer silently
+    drops `-metadata`), but ID3v2 tags are just a header block prepended to
+    the file, so they attach fine to any file type -- this is the same trick
+    id3v2-aware players already use for tagging bare AC3/DTS rips.
+    """
+    try:
+        tags = ID3(path)
+    except ID3NoHeaderError:
+        tags = ID3()
+    tags.setall("TIT2", [TIT2(encoding=3, text=title)])
+    tags.setall("TPE1", [TPE1(encoding=3, text=artist)])
+    tags.setall("TALB", [TALB(encoding=3, text=album)])
+    tags.setall("TRCK", [TRCK(encoding=3, text=f"{track_number}/{track_total}")])
+    if date:
+        tags.setall("TDRC", [TDRC(encoding=3, text=date)])
+    tags.save(path, v2_version=3)
+
+
 def extract_album(
     dvd_path: Path,
     output_dir: Path,
@@ -234,22 +284,26 @@ def extract_album(
     if audio_track is None:
         raise ExtractionError(f"Title {album_title.number} has no 5.1 AC3 track")
 
-    track_titles = fetch_musicbrainz_titles(musicbrainz_release) if musicbrainz_release else None
-    if track_titles is not None and len(track_titles) != len(album_title.chapters):
+    album_metadata = fetch_musicbrainz_release(musicbrainz_release) if musicbrainz_release else None
+    if album_metadata is not None and len(album_metadata.track_titles) != len(album_title.chapters):
         print(
-            f"Warning: MusicBrainz release has {len(track_titles)} tracks but the DVD "
-            f"title has {len(album_title.chapters)} chapters. Falling back to generic naming.",
+            f"Warning: MusicBrainz release has {len(album_metadata.track_titles)} tracks but "
+            f"the DVD title has {len(album_title.chapters)} chapters. Falling back to generic "
+            "naming, no ID3 tags will be written.",
             file=sys.stderr,
         )
-        track_titles = None
+        album_metadata = None
 
+    track_titles = album_metadata.track_titles if album_metadata is not None else None
     filenames = track_filenames(len(album_title.chapters), track_titles)
+    track_total = len(filenames)
 
     print(
         f"Title {album_title.number}: {album_title.length_seconds:.0f}s, "
         f"{len(album_title.chapters)} chapters"
     )
     print(f"Audio track {audio_track.index}: {audio_track.codec} {audio_track.channels}ch")
+    print(f"ID3 tags: {'yes, from MusicBrainz' if album_metadata is not None else 'no'}")
     for chapter, filename in zip(album_title.chapters, filenames):
         print(f"  {chapter.number:02d}  {chapter.length_seconds:7.1f}s  -> {filename}")
 
@@ -259,9 +313,19 @@ def extract_album(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = output_dir / ".chapter_tmp.mkv"
-    for chapter, filename in zip(album_title.chapters, filenames):
+    for i, (chapter, filename) in enumerate(zip(album_title.chapters, filenames), start=1):
         out_path = output_dir / filename
         extract_chapter(dvd_path, album_title, audio_track, chapter.number, out_path, tmp_path)
+        if album_metadata is not None:
+            write_id3_tags(
+                out_path,
+                title=album_metadata.track_titles[i - 1],
+                artist=album_metadata.artist,
+                album=album_metadata.title,
+                track_number=i,
+                track_total=track_total,
+                date=album_metadata.date,
+            )
         print(f"Wrote {out_path}")
 
 

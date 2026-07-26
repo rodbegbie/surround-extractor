@@ -3,7 +3,9 @@ name = "sfa-extractor"
 version = "0.1.0"
 description = "Extract 5.1 surround AC3 mixes from DVD-Video album releases, split into per-track files"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "mutagen>=1.48.1",
+]
 
 [dependency-groups]
 dev = [

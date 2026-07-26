@@ -1,0 +1,104 @@
+from extract_ac3 import (
+    parse_hms,
+    parse_scan,
+    pick_album_title,
+    sanitize_filename,
+    track_filenames,
+)
+
+# Trimmed real HandBrakeCLI `--scan -t 0` output for the Phantom Power DVD:
+# title 1 is a short menu/logo clip, title 2 is the full album, title 3 is a
+# single-song title with no 5.1 track variety (only used to prove title 2
+# still wins on duration).
+SCAN_OUTPUT = """
++ title 1:
+  + index 1
+  + duration: 00:00:25
+  + chapters:
+    + 1: duration 00:00:25
+  + audio tracks:
+    + 1, English (AC3, 2.0 ch, 192 kbps) (iso639-2: eng), 48000Hz, 192000bps
+  + subtitle tracks:
++ title 2:
+  + index 2
+  + duration: 00:52:36
+  + size: 720x576, pixel aspect: 64/45, display aspect: 1.78, 25.000 fps
+  + autocrop: 0/0/12/174
+  + chapters:
+    + 1: duration 00:03:35
+    + 2: duration 00:02:58
+  + audio tracks:
+    + 1, English (AC3, 2.0 ch, 256 kbps) (iso639-2: eng), 48000Hz, 256000bps
+    + 2, English (AC3, 5.1 ch, 448 kbps) (iso639-2: eng), 48000Hz, 448000bps
+    + 3, English (DTS, 5.1 ch, 768 kbps) (iso639-2: eng), 48000Hz, 768000bps
+    + 4, English (AC3, 2.0 ch, 192 kbps) (iso639-2: eng), 48000Hz, 192000bps
+  + subtitle tracks:
++ title 3:
+  + index 3
+  + duration: 00:03:34
+  + chapters:
+    + 1: duration 00:03:34
+  + audio tracks:
+    + 1, English (AC3, 2.0 ch, 256 kbps) (iso639-2: eng), 48000Hz, 256000bps
+  + subtitle tracks:
+"""
+
+
+def test_parse_hms():
+    assert parse_hms("00:52:36") == 3156
+    assert parse_hms("00:00:25") == 25
+
+
+def test_parse_scan_extracts_titles_chapters_and_audio():
+    titles = parse_scan(SCAN_OUTPUT)
+    assert [t.number for t in titles] == [1, 2, 3]
+
+    album = titles[1]
+    assert album.length_seconds == 3156
+    assert [c.length_seconds for c in album.chapters] == [215, 178]
+    assert len(album.audio_tracks) == 4
+    assert album.audio_tracks[1].codec == "AC3"
+    assert album.audio_tracks[1].channels == 6
+    assert album.audio_tracks[2].codec == "DTS"
+
+
+def test_surround_ac3_track_picks_six_channel_ac3_not_dts():
+    titles = parse_scan(SCAN_OUTPUT)
+    album = titles[1]
+    track = album.surround_ac3_track()
+    assert track is not None
+    assert track.index == 2
+    assert track.codec == "AC3"
+    assert track.channels == 6
+
+
+def test_surround_ac3_track_none_when_absent():
+    titles = parse_scan(SCAN_OUTPUT)
+    single_song = titles[2]
+    assert single_song.surround_ac3_track() is None
+
+
+def test_pick_album_title_prefers_longest_multi_chapter_surround_title():
+    titles = parse_scan(SCAN_OUTPUT)
+    chosen = pick_album_title(titles)
+    assert chosen.number == 2
+
+
+def test_track_filenames_uses_names_when_count_matches():
+    names = track_filenames(2, ["Hello Sunshine", "Liberty Belle"])
+    assert names == ["01 - Hello Sunshine.ac3", "02 - Liberty Belle.ac3"]
+
+
+def test_track_filenames_falls_back_when_count_mismatches():
+    names = track_filenames(3, ["Only One Track"])
+    assert names == ["track01.ac3", "track02.ac3", "track03.ac3"]
+
+
+def test_track_filenames_generic_when_no_names_given():
+    names = track_filenames(2, None)
+    assert names == ["track01.ac3", "track02.ac3"]
+
+
+def test_sanitize_filename_strips_path_hostile_characters():
+    assert sanitize_filename("Sex, War & Robots") == "Sex, War & Robots"
+    assert sanitize_filename("Father / Father?") == "Father - Father-"

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Extract the 5.1 surround AC3 mix from a DVD-Video album release.
+"""Extract the 5.1 surround AC3 (and DTS, if present) mix from a DVD-Video
+album release.
 
 Uses HandBrakeCLI (which bundles its own DVD chapter/cell navigation) to find
-the main "play the album" title and cut it into one AC3 file per chapter.
-Track/artist/album metadata is optionally sourced from a MusicBrainz release
-and written as ID3v2 tags on each output file.
+the main "play the album" title and cut it into one file per chapter, per
+codec. AC3 goes to the main output directory; DTS (when the title has a 5.1
+DTS track) goes to a sibling "<output dir name> DTS" directory. Track/
+artist/album metadata is optionally sourced from a MusicBrainz release and
+written as ID3v2 tags on each output file.
 """
 
 from __future__ import annotations
@@ -21,7 +24,9 @@ from pathlib import Path
 
 from mutagen.id3 import ID3, TALB, TDRC, TIT2, TPE1, TRCK, ID3NoHeaderError
 
-MUSICBRAINZ_API = "https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artist-credits&fmt=json"
+MUSICBRAINZ_API = (
+    "https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artist-credits&fmt=json"
+)
 USER_AGENT = "sfa-extractor/0.1 (personal use script)"
 
 REQUIRED_TOOLS = ("HandBrakeCLI", "ffmpeg", "ffprobe")
@@ -51,11 +56,25 @@ class Title:
     chapters: list[Chapter] = field(default_factory=list)
     audio_tracks: list[AudioTrack] = field(default_factory=list)
 
-    def surround_ac3_track(self) -> AudioTrack | None:
+    def find_surround_track(self, codec: str) -> AudioTrack | None:
         for track in self.audio_tracks:
-            if track.codec == "AC3" and track.channels == 6:
+            if track.codec == codec and track.channels == 6:
                 return track
         return None
+
+    def surround_ac3_track(self) -> AudioTrack | None:
+        return self.find_surround_track("AC3")
+
+
+@dataclass(frozen=True)
+class CodecSpec:
+    name: str  # matches HandBrake's scan codec label, e.g. "AC3"/"DTS"
+    handbrake_encoder: str  # HandBrakeCLI -E passthrough value, e.g. "copy:ac3"
+    extension: str  # also doubles as the ffmpeg raw-stream muxer/format name
+
+
+AC3 = CodecSpec(name="AC3", handbrake_encoder="copy:ac3", extension="ac3")
+DTS = CodecSpec(name="DTS", handbrake_encoder="copy:dts", extension="dts")
 
 
 def check_tools() -> None:
@@ -171,19 +190,20 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[/:\\?*"<>|]', "-", name).strip()
 
 
-def track_filenames(count: int, track_titles: list[str] | None) -> list[str]:
+def track_filenames(count: int, track_titles: list[str] | None, extension: str) -> list[str]:
     if track_titles is not None and len(track_titles) == count:
         return [
-            f"{i:02d} - {sanitize_filename(title)}.ac3"
+            f"{i:02d} - {sanitize_filename(title)}.{extension}"
             for i, title in enumerate(track_titles, start=1)
         ]
-    return [f"track{i:02d}.ac3" for i in range(1, count + 1)]
+    return [f"track{i:02d}.{extension}" for i in range(1, count + 1)]
 
 
 def extract_chapter(
     dvd_path: Path,
     title: Title,
     audio_track: AudioTrack,
+    codec: CodecSpec,
     chapter_number: int,
     out_path: Path,
     tmp_path: Path,
@@ -200,7 +220,7 @@ def extract_chapter(
             "-a",
             str(audio_track.index),
             "-E",
-            "copy:ac3",
+            codec.handbrake_encoder,
             "-e",
             "x264",
             "--encoder-preset",
@@ -225,7 +245,7 @@ def extract_chapter(
             "-c:a",
             "copy",
             "-f",
-            "ac3",
+            codec.extension,
             str(out_path),
         ]
     )
@@ -241,12 +261,13 @@ def write_id3_tags(
     track_total: int,
     date: str | None,
 ) -> None:
-    """Prepend an ID3v2 tag to a raw AC3 file.
+    """Prepend an ID3v2 tag to a raw AC3 or DTS file.
 
-    Raw AC3 has no native metadata container (ffmpeg's `ac3` muxer silently
-    drops `-metadata`), but ID3v2 tags are just a header block prepended to
-    the file, so they attach fine to any file type -- this is the same trick
-    id3v2-aware players already use for tagging bare AC3/DTS rips.
+    Raw AC3/DTS have no native metadata container (ffmpeg's muxers for both
+    silently drop `-metadata`), but ID3v2 tags are just a header block
+    prepended to the file, so they attach fine to any file type -- this is
+    the same trick id3v2-aware players already use for tagging bare AC3/DTS
+    rips.
     """
     try:
         tags = ID3(path)
@@ -259,6 +280,34 @@ def write_id3_tags(
     if date:
         tags.setall("TDRC", [TDRC(encoding=3, text=date)])
     tags.save(path, v2_version=3)
+
+
+def extract_all_chapters(
+    dvd_path: Path,
+    title: Title,
+    audio_track: AudioTrack,
+    codec: CodecSpec,
+    filenames: list[str],
+    out_dir: Path,
+    album_metadata: AlbumMetadata | None,
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_dir / ".chapter_tmp.mkv"
+    track_total = len(filenames)
+    for i, (chapter, filename) in enumerate(zip(title.chapters, filenames), start=1):
+        out_path = out_dir / filename
+        extract_chapter(dvd_path, title, audio_track, codec, chapter.number, out_path, tmp_path)
+        if album_metadata is not None:
+            write_id3_tags(
+                out_path,
+                title=album_metadata.track_titles[i - 1],
+                artist=album_metadata.artist,
+                album=album_metadata.title,
+                track_number=i,
+                track_total=track_total,
+                date=album_metadata.date,
+            )
+        print(f"Wrote {out_path}")
 
 
 def extract_album(
@@ -280,9 +329,11 @@ def extract_album(
     else:
         album_title = pick_album_title(titles)
 
-    audio_track = album_title.surround_ac3_track()
-    if audio_track is None:
+    ac3_track = album_title.find_surround_track(AC3.name)
+    if ac3_track is None:
         raise ExtractionError(f"Title {album_title.number} has no 5.1 AC3 track")
+    dts_track = album_title.find_surround_track(DTS.name)
+    dts_output_dir = output_dir.parent / f"{output_dir.name} DTS"
 
     album_metadata = fetch_musicbrainz_release(musicbrainz_release) if musicbrainz_release else None
     if album_metadata is not None and len(album_metadata.track_titles) != len(album_title.chapters):
@@ -295,38 +346,40 @@ def extract_album(
         album_metadata = None
 
     track_titles = album_metadata.track_titles if album_metadata is not None else None
-    filenames = track_filenames(len(album_title.chapters), track_titles)
-    track_total = len(filenames)
+    ac3_filenames = track_filenames(len(album_title.chapters), track_titles, AC3.extension)
+    dts_filenames = (
+        track_filenames(len(album_title.chapters), track_titles, DTS.extension)
+        if dts_track is not None
+        else None
+    )
 
     print(
         f"Title {album_title.number}: {album_title.length_seconds:.0f}s, "
         f"{len(album_title.chapters)} chapters"
     )
-    print(f"Audio track {audio_track.index}: {audio_track.codec} {audio_track.channels}ch")
+    print(f"AC3 track {ac3_track.index}: {ac3_track.codec} {ac3_track.channels}ch -> {output_dir}")
+    if dts_track is not None:
+        print(
+            f"DTS track {dts_track.index}: {dts_track.codec} {dts_track.channels}ch "
+            f"-> {dts_output_dir}"
+        )
+    else:
+        print("DTS: not present on this title, skipping")
     print(f"ID3 tags: {'yes, from MusicBrainz' if album_metadata is not None else 'no'}")
-    for chapter, filename in zip(album_title.chapters, filenames):
+    for chapter, filename in zip(album_title.chapters, ac3_filenames):
         print(f"  {chapter.number:02d}  {chapter.length_seconds:7.1f}s  -> {filename}")
 
     if not confirm:
         print("\nDry run only (pass --yes to actually extract). No files written.")
         return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_dir / ".chapter_tmp.mkv"
-    for i, (chapter, filename) in enumerate(zip(album_title.chapters, filenames), start=1):
-        out_path = output_dir / filename
-        extract_chapter(dvd_path, album_title, audio_track, chapter.number, out_path, tmp_path)
-        if album_metadata is not None:
-            write_id3_tags(
-                out_path,
-                title=album_metadata.track_titles[i - 1],
-                artist=album_metadata.artist,
-                album=album_metadata.title,
-                track_number=i,
-                track_total=track_total,
-                date=album_metadata.date,
-            )
-        print(f"Wrote {out_path}")
+    extract_all_chapters(
+        dvd_path, album_title, ac3_track, AC3, ac3_filenames, output_dir, album_metadata
+    )
+    if dts_track is not None and dts_filenames is not None:
+        extract_all_chapters(
+            dvd_path, album_title, dts_track, DTS, dts_filenames, dts_output_dir, album_metadata
+        )
 
 
 def main() -> None:
@@ -336,7 +389,11 @@ def main() -> None:
         "--output-dir",
         type=Path,
         default=None,
-        help="Where to write .ac3 files (default: ./output/<dvd folder name>)",
+        help=(
+            "Where to write .ac3 files (default: ./output/<dvd folder name>). "
+            "If the title also has a 5.1 DTS track, it's written to a sibling "
+            "'<output dir name> DTS' directory."
+        ),
     )
     parser.add_argument(
         "--musicbrainz-release",

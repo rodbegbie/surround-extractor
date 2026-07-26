@@ -82,6 +82,22 @@ def test_surround_ac3_track_none_when_absent():
     assert single_song.surround_ac3_track() is None
 
 
+def test_find_surround_track_picks_dts_when_present():
+    titles = parse_scan(SCAN_OUTPUT)
+    album = titles[1]
+    track = album.find_surround_track("DTS")
+    assert track is not None
+    assert track.index == 3
+    assert track.codec == "DTS"
+    assert track.channels == 6
+
+
+def test_find_surround_track_none_when_dts_absent():
+    titles = parse_scan(SCAN_OUTPUT)
+    single_song = titles[2]
+    assert single_song.find_surround_track("DTS") is None
+
+
 def test_pick_album_title_prefers_longest_multi_chapter_surround_title():
     titles = parse_scan(SCAN_OUTPUT)
     chosen = pick_album_title(titles)
@@ -89,18 +105,23 @@ def test_pick_album_title_prefers_longest_multi_chapter_surround_title():
 
 
 def test_track_filenames_uses_names_when_count_matches():
-    names = track_filenames(2, ["Hello Sunshine", "Liberty Belle"])
+    names = track_filenames(2, ["Hello Sunshine", "Liberty Belle"], "ac3")
     assert names == ["01 - Hello Sunshine.ac3", "02 - Liberty Belle.ac3"]
 
 
 def test_track_filenames_falls_back_when_count_mismatches():
-    names = track_filenames(3, ["Only One Track"])
+    names = track_filenames(3, ["Only One Track"], "ac3")
     assert names == ["track01.ac3", "track02.ac3", "track03.ac3"]
 
 
 def test_track_filenames_generic_when_no_names_given():
-    names = track_filenames(2, None)
+    names = track_filenames(2, None, "ac3")
     assert names == ["track01.ac3", "track02.ac3"]
+
+
+def test_track_filenames_uses_given_extension():
+    names = track_filenames(2, ["Hello Sunshine", "Liberty Belle"], "dts")
+    assert names == ["01 - Hello Sunshine.dts", "02 - Liberty Belle.dts"]
 
 
 def test_sanitize_filename_strips_path_hostile_characters():

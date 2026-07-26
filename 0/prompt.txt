@@ -1,0 +1,29 @@
+/context-mode:ctx-doctor
+
+---
+
+run the script now and let's see how it does.
+
+---
+
+commit this work
+
+---
+
+can you update the script to write ID3 tags to the generated Ac3 files?
+
+---
+
+OK, the second file is at "/Volumes/Ten/.CloudStorage/Data/Dropbox/Video/DVD/rings around the world.dvdmedia" and the MBID is 4a0b5a6f-8286-3fed-bb96-99cb6b44fb7d
+
+---
+
+Try "/Volumes/Ten/.CloudStorage/Data/Dropbox/Video/DVD/BJORK_POST.dvdmedia" with MBID d3ac571b-55ae-344e-aee9-f65c2e91ecef
+
+---
+
+end session
+
+---
+
+I've set up the pulse MCP -- can you post to socialmedia and your journal?

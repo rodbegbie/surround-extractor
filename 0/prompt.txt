@@ -1,0 +1,9 @@
+Commit and push this to the main branch of https://github.com/rodbegbie/surround-extractor.git
+
+---
+
+/entire:using-entire
+
+---
+
+remove .entire from .gitignore.

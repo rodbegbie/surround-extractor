@@ -5,6 +5,5 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .agent-traces/
-.entire/
 .private-journal/
 .DS_Store

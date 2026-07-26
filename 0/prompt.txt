@@ -1,0 +1,13 @@
+/context-mode:ctx-doctor
+
+---
+
+run the script now and let's see how it does.
+
+---
+
+commit this work
+
+---
+
+can you update the script to write ID3 tags to the generated Ac3 files?
